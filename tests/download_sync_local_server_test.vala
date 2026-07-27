@@ -1,7 +1,7 @@
 namespace AppTests {
     using GLib;
-    using ValaFoundation.Downloader;
-    using ValaFoundation.Testcases;
+    using ValaTux.Downloader;
+    using ValaTux.Testcases;
 
     public class DownloadSyncLocalServerTest : BaseTest {
         construct {

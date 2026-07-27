@@ -26,7 +26,7 @@ A small Vala library for downloading files with optional speed limiting.
 
 ## Public API (summary)
 
-Namespace: `ValaFoundation.Downloader`
+Namespace: `ValaTux.Downloader`
 
 - `Manager`
   - `download(string url, string dest_path) -> Result`
@@ -66,7 +66,7 @@ Namespace: `ValaFoundation.Downloader`
 ## Example: synchronous download
 
 ```vala
-using ValaFoundation.Downloader;
+using ValaTux.Downloader;
 
 int main (string[] args) {
 	var manager = new Manager ();
@@ -96,7 +96,7 @@ int main (string[] args) {
 ## Example: asynchronous download
 
 ```vala
-using ValaFoundation.Downloader;
+using ValaTux.Downloader;
 
 public async int run_async () {
 	var manager = new Manager ();
@@ -126,7 +126,7 @@ public async int run_async () {
 ## Example: queued downloads (multiple files)
 
 ```vala
-using ValaFoundation.Downloader;
+using ValaTux.Downloader;
 
 public async int run_batch_async () {
 	var manager = new Manager ();
@@ -192,7 +192,7 @@ executable('my-app',
 Then in Vala code:
 
 ```vala
-using ValaFoundation.Downloader;
+using ValaTux.Downloader;
 ```
 
 ### Option 2: Installed library (pkg-config)
@@ -222,7 +222,7 @@ If you want everything vendored inside your own repository, copy release artifac
 To automate this setup, run the helper script in your consumer project root:
 
 ```sh
-curl -sSfL https://raw.githubusercontent.com/ValaFoundation/downloader-lib/master/init-local-vapi.sh | bash
+curl -sSfL https://raw.githubusercontent.com/ValaTux/downloader-lib/master/init-local-vapi.sh | bash
 ```
 
 The script will:
@@ -232,12 +232,12 @@ The script will:
 - copy artifacts into your local `vapi/`, `lib/`, and `include/` directories
 - append an idempotent helper block to your `meson.build` with reusable variables
 
-## Install via [Vamposer](https://github.com/ValaFoundation/vamposer)
+## Install via [Vamposer](https://github.com/ValaTux/vamposer)
 
 In your consumer project root:
 
 ```sh
-vamposer require ValaFoundation/downloader-lib master
+vamposer require ValaTux/downloader-lib master
 vamposer install
 ```
 
@@ -259,7 +259,7 @@ You can also use a fixed tag or commit instead of `master`.
 If you also want the test workspace, install it as a development dependency:
 
 ```sh
-vamposer require --dev ValaFoundation/testcases master
+vamposer require --dev ValaTux/testcases master
 vamposer install --dev
 ```
 
@@ -302,7 +302,7 @@ To add `vala-downloader-lib` as a Meson subproject dependency, run:
 Or run it directly from GitHub:
 
 ```sh
-curl -sSfL https://raw.githubusercontent.com/ValaFoundation/downloader-lib/refs/heads/master/init.sh -o init.sh && chmod +x init.sh && ./init.sh && rm init.sh
+curl -sSfL https://raw.githubusercontent.com/ValaTux/downloader-lib/refs/heads/master/init.sh -o init.sh && chmod +x init.sh && ./init.sh && rm init.sh
 ```
 
 ## Build

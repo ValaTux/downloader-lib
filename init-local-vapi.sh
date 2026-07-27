@@ -6,9 +6,9 @@ RED='\033[0;31m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-REPO_URL="${VALA_DOWNLOADER_REPO_URL:-https://github.com/ValaFoundation/downloader-lib.git}"
+REPO_URL="${VALA_DOWNLOADER_REPO_URL:-https://github.com/ValaTux/downloader-lib.git}"
 REPO_REF="${VALA_DOWNLOADER_REF:-master}"
-GITHUB_REPO="${VALA_DOWNLOADER_GITHUB_REPO:-ValaFoundation/downloader-lib}"
+GITHUB_REPO="${VALA_DOWNLOADER_GITHUB_REPO:-ValaTux/downloader-lib}"
 
 PROJECT_ROOT="${1:-$PWD}"
 MESON_FILE="${PROJECT_ROOT}/meson.build"

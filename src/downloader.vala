@@ -1,4 +1,4 @@
-namespace ValaFoundation.Downloader {
+namespace ValaTux.Downloader {
     const int64 KILOBYTE = 1024;
     const int64 MEGABYTE = 1024 * 1024;
     const int64 GIGABYTE = 1024 * 1024 * 1024;

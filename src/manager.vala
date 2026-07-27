@@ -1,4 +1,4 @@
-namespace ValaFoundation.Downloader {
+namespace ValaTux.Downloader {
     public class DownloadRequest : Object {
         public string url { get; construct set; }
         public string dest_path { get; construct set; }
@@ -55,15 +55,15 @@ namespace ValaFoundation.Downloader {
         }
 
         public void set_speed_limit_in_kilobytes (int64 kilobytes_per_second) {
-            this.speed_limit_bps = kilobytes_per_second * ValaFoundation.Downloader.KILOBYTE;
+            this.speed_limit_bps = kilobytes_per_second * ValaTux.Downloader.KILOBYTE;
         }
 
         public void set_speed_limit_in_megabytes (int64 megabytes_per_second) {
-            this.speed_limit_bps = megabytes_per_second * ValaFoundation.Downloader.MEGABYTE;
+            this.speed_limit_bps = megabytes_per_second * ValaTux.Downloader.MEGABYTE;
         }
 
         public void set_speed_limit_in_gigabytes (int64 gigabytes_per_second) {
-            this.speed_limit_bps = gigabytes_per_second * ValaFoundation.Downloader.GIGABYTE;
+            this.speed_limit_bps = gigabytes_per_second * ValaTux.Downloader.GIGABYTE;
         }
 
         private Result build_result (Soup.Message message, int64 total_bytes, int64 start_time_us, int64 content_length) {
