@@ -28,17 +28,42 @@ namespace ValaTux.Downloader {
     public class Manager : Object {
         // Limit rychlosti v bajtech za sekundu (0 = bez limitu)
         public int64 speed_limit_bps { get; set; default = 0; }
-
-        private int64 multiplier { get; set; default = 1; }
+        public uint max_retry_attempts { get; set; default = 0; }
+        public uint retry_delay_ms { get; set; default = 250; }
+        public bool retry_on_http_failure { get; set; default = true; }
 
         private Soup.Session session;
         private Gee.ArrayList<BatchDownloadResult> download_queue;
         private Mutex queue_mutex;
 
-        public Manager () {
-            this.session = new Soup.Session ();
-            this.session.user_agent = "Vala-Downloader/1.0";
+        public Manager (Soup.Session? session = null) {
+            if (session != null) {
+                this.session = session;
+            } else {
+                this.session = new Soup.Session ();
+            }
+
+            if (this.session.user_agent == null || this.session.user_agent == "") {
+                this.session.user_agent = "Vala-Downloader/1.0";
+            }
+
             this.download_queue = new Gee.ArrayList<BatchDownloadResult> ();
+        }
+
+        public void set_session (Soup.Session session) {
+            this.session = session;
+
+            if (this.session.user_agent == null || this.session.user_agent == "") {
+                this.session.user_agent = "Vala-Downloader/1.0";
+            }
+        }
+
+        public Soup.Session get_session () {
+            return this.session;
+        }
+
+        public void set_user_agent (string user_agent) {
+            this.session.user_agent = user_agent;
         }
 
         public BatchDownloadResult add_to_download (string url, string dest_path) {
@@ -104,109 +129,386 @@ namespace ValaTux.Downloader {
             return result;
         }
 
-        public Result download (string url, string dest_path) throws GLib.Error {
+        private int64 estimate_remaining_time (int64 content_length, int64 total_bytes, int64 actual_speed_bps) {
+            if (content_length <= 0 || total_bytes >= content_length) {
+                return 0;
+            }
+
+            if (actual_speed_bps > 0) {
+                int64 remaining_bytes = content_length - total_bytes;
+                return (remaining_bytes + actual_speed_bps - 1) / actual_speed_bps;
+            }
+
+            return -1;
+        }
+
+        private void emit_progress (
+            DownloadProgressCallback? progress_callback,
+            int64 total_bytes,
+            int64 content_length,
+            int64 start_time_us
+        ) {
+            if (progress_callback == null) {
+                return;
+            }
+
+            int64 elapsed_us = GLib.get_monotonic_time () - start_time_us;
+            int64 actual_speed_bps = 0;
+
+            if (elapsed_us > 0 && total_bytes > 0) {
+                actual_speed_bps = (total_bytes * 1000000) / elapsed_us;
+            }
+
+            int64 remaining_time = estimate_remaining_time (content_length, total_bytes, actual_speed_bps);
+            progress_callback (total_bytes, content_length, actual_speed_bps, remaining_time);
+        }
+
+        private void remove_partial_file (File file) {
+            try {
+                if (file.query_exists ()) {
+                    file.delete ();
+                }
+            } catch (Error e) {
+            }
+        }
+
+        private void sleep_with_cancellable (int64 delay_us, Cancellable? cancellable) throws GLib.Error {
+            int64 remaining_us = delay_us;
+
+            while (remaining_us > 0) {
+                if (cancellable != null) {
+                    cancellable.set_error_if_cancelled ();
+                }
+
+                int64 step_us = remaining_us > 50000 ? 50000 : remaining_us;
+                GLib.Thread.usleep ((ulong) step_us);
+                remaining_us -= step_us;
+            }
+        }
+
+        private async void async_sleep_with_cancellable (uint delay_ms, Cancellable? cancellable) throws GLib.Error {
+            uint remaining_ms = delay_ms;
+
+            while (remaining_ms > 0) {
+                if (cancellable != null) {
+                    cancellable.set_error_if_cancelled ();
+                }
+
+                uint step_ms = remaining_ms > 50 ? 50 : remaining_ms;
+                yield async_sleep (step_ms);
+                remaining_ms -= step_ms;
+            }
+        }
+
+        private bool should_retry_http_status (uint status_code) {
+            if (status_code == Soup.Status.REQUEST_TIMEOUT || status_code == 429) {
+                return true;
+            }
+
+            return status_code >= 500;
+        }
+
+        private bool should_retry_error (Error e) {
+            if (e is IOError.CANCELLED) {
+                return false;
+            }
+
+            return true;
+        }
+
+        private Result download_once (
+            string url,
+            string dest_path,
+            Cancellable? cancellable,
+            DownloadProgressCallback? progress_callback
+        ) throws GLib.Error {
             var file = File.new_for_path (dest_path);
+            InputStream? input_stream = null;
+            OutputStream? output_stream = null;
 
-            if (file.query_exists ()) {
-                file.delete ();
-            }
-
-            var message = new Soup.Message ("GET", url);
-            var input_stream = this.session.send (message, null);
-            var output_stream = file.create (FileCreateFlags.REPLACE_DESTINATION, null);
-
-            uint8 buffer[8192];
-            int64 bytes_in_current_second = 0;
-            int64 second_start_time = GLib.get_monotonic_time ();
-            int64 start_time = second_start_time;
-            int64 total_bytes = 0;
-            int64 content_length = message.response_headers.get_content_length ();
-
-            while (true) {
-                ssize_t bytes_read = input_stream.read (buffer, null);
-                if (bytes_read == 0) {
-                    break;
+            try {
+                if (cancellable != null) {
+                    cancellable.set_error_if_cancelled ();
                 }
 
-                total_bytes += bytes_read;
+                if (file.query_exists (cancellable)) {
+                    file.delete (cancellable);
+                }
 
-                size_t bytes_written;
-                output_stream.write_all (buffer[0:bytes_read], out bytes_written, null);
+                var message = new Soup.Message ("GET", url);
+                input_stream = this.session.send (message, cancellable);
+                output_stream = file.create (FileCreateFlags.REPLACE_DESTINATION, cancellable);
 
-                if (this.speed_limit_bps > 0) {
-                    bytes_in_current_second += bytes_read;
-                    int64 current_time = GLib.get_monotonic_time ();
-                    int64 elapsed_us = current_time - second_start_time;
-                    int64 expected_us = (bytes_in_current_second * 1000000) / this.speed_limit_bps;
+                uint8 buffer[8192];
+                int64 bytes_in_current_second = 0;
+                int64 second_start_time = GLib.get_monotonic_time ();
+                int64 start_time = second_start_time;
+                int64 total_bytes = 0;
+                int64 content_length = message.response_headers.get_content_length ();
 
-                    if (elapsed_us < expected_us) {
-                        GLib.Thread.usleep ((ulong) (expected_us - elapsed_us));
+                while (true) {
+                    if (cancellable != null) {
+                        cancellable.set_error_if_cancelled ();
                     }
 
-                    if (GLib.get_monotonic_time () - second_start_time >= 1000000) {
-                        bytes_in_current_second = 0;
-                        second_start_time = GLib.get_monotonic_time ();
+                    ssize_t bytes_read = input_stream.read (buffer, cancellable);
+                    if (bytes_read == 0) {
+                        break;
+                    }
+
+                    total_bytes += bytes_read;
+
+                    size_t bytes_written;
+                    output_stream.write_all (buffer[0:bytes_read], out bytes_written, cancellable);
+
+                    emit_progress (progress_callback, total_bytes, content_length, start_time);
+
+                    if (this.speed_limit_bps > 0) {
+                        bytes_in_current_second += bytes_read;
+                        int64 current_time = GLib.get_monotonic_time ();
+                        int64 elapsed_us = current_time - second_start_time;
+                        int64 expected_us = (bytes_in_current_second * 1000000) / this.speed_limit_bps;
+
+                        if (elapsed_us < expected_us) {
+                            sleep_with_cancellable (expected_us - elapsed_us, cancellable);
+                        }
+
+                        if (GLib.get_monotonic_time () - second_start_time >= 1000000) {
+                            bytes_in_current_second = 0;
+                            second_start_time = GLib.get_monotonic_time ();
+                        }
+                    }
+                }
+
+                input_stream.close (cancellable);
+                input_stream = null;
+
+                output_stream.close (cancellable);
+                output_stream = null;
+
+                var result = build_result (message, total_bytes, start_time, content_length);
+                if (!result.is_downloaded) {
+                    remove_partial_file (file);
+                }
+
+                return result;
+            } catch (Error e) {
+                remove_partial_file (file);
+                throw e;
+            } finally {
+                if (input_stream != null) {
+                    try {
+                        input_stream.close (null);
+                    } catch (Error e) {
+                    }
+                }
+
+                if (output_stream != null) {
+                    try {
+                        output_stream.close (null);
+                    } catch (Error e) {
                     }
                 }
             }
+        }
 
-            input_stream.close (null);
-            output_stream.close (null);
+        private async Result download_once_async (
+            string url,
+            string dest_path,
+            Cancellable? cancellable,
+            DownloadProgressCallback? progress_callback
+        ) throws GLib.Error {
+            var file = File.new_for_path (dest_path);
+            InputStream? input_stream = null;
+            OutputStream? output_stream = null;
 
-            return build_result (message, total_bytes, start_time, content_length);
+            try {
+                if (cancellable != null) {
+                    cancellable.set_error_if_cancelled ();
+                }
+
+                if (file.query_exists (cancellable)) {
+                    file.delete (cancellable);
+                }
+
+                var message = new Soup.Message ("GET", url);
+                input_stream = yield this.session.send_async (message, Priority.DEFAULT, cancellable);
+                output_stream = yield file.create_async (FileCreateFlags.REPLACE_DESTINATION, Priority.DEFAULT, cancellable);
+
+                uint8 buffer[8192];
+                int64 bytes_in_current_second = 0;
+                int64 second_start_time = GLib.get_monotonic_time ();
+                int64 start_time = second_start_time;
+                int64 total_bytes = 0;
+                int64 content_length = message.response_headers.get_content_length ();
+
+                while (true) {
+                    if (cancellable != null) {
+                        cancellable.set_error_if_cancelled ();
+                    }
+
+                    ssize_t bytes_read = yield input_stream.read_async (buffer, Priority.DEFAULT, cancellable);
+                    if (bytes_read == 0) {
+                        break;
+                    }
+
+                    total_bytes += bytes_read;
+
+                    size_t bytes_written;
+                    yield output_stream.write_all_async (buffer[0:bytes_read], Priority.DEFAULT, cancellable, out bytes_written);
+
+                    emit_progress (progress_callback, total_bytes, content_length, start_time);
+
+                    if (this.speed_limit_bps > 0) {
+                        bytes_in_current_second += bytes_read;
+                        int64 current_time = GLib.get_monotonic_time ();
+                        int64 elapsed_us = current_time - second_start_time;
+                        int64 expected_us = (bytes_in_current_second * 1000000) / this.speed_limit_bps;
+
+                        if (elapsed_us < expected_us) {
+                            uint delay_ms = (uint) ((expected_us - elapsed_us) / 1000);
+                            if (delay_ms > 0) {
+                                yield async_sleep_with_cancellable (delay_ms, cancellable);
+                            }
+                        }
+
+                        if (GLib.get_monotonic_time () - second_start_time >= 1000000) {
+                            bytes_in_current_second = 0;
+                            second_start_time = GLib.get_monotonic_time ();
+                        }
+                    }
+                }
+
+                yield input_stream.close_async (Priority.DEFAULT, cancellable);
+                input_stream = null;
+
+                yield output_stream.close_async (Priority.DEFAULT, cancellable);
+                output_stream = null;
+
+                var result = build_result (message, total_bytes, start_time, content_length);
+                if (!result.is_downloaded) {
+                    remove_partial_file (file);
+                }
+
+                return result;
+            } catch (Error e) {
+                remove_partial_file (file);
+                throw e;
+            } finally {
+                if (input_stream != null) {
+                    try {
+                        yield input_stream.close_async (Priority.DEFAULT, null);
+                    } catch (Error e) {
+                    }
+                }
+
+                if (output_stream != null) {
+                    try {
+                        yield output_stream.close_async (Priority.DEFAULT, null);
+                    } catch (Error e) {
+                    }
+                }
+            }
+        }
+
+        public Result download (string url, string dest_path) throws GLib.Error {
+            return download_with_options (url, dest_path, null, null);
         }
 
         public async Result download_async (string url, string dest_path) throws GLib.Error {
-            var file = File.new_for_path (dest_path);
+            return yield download_async_with_options (url, dest_path, null, null);
+        }
 
-            if (file.query_exists ()) {
-                file.delete ();
-            }
-
-            var message = new Soup.Message ("GET", url);
-            var input_stream = yield this.session.send_async (message, Priority.DEFAULT, null);
-            var output_stream = yield file.create_async (FileCreateFlags.REPLACE_DESTINATION, Priority.DEFAULT, null);
-
-            uint8 buffer[8192];
-            int64 bytes_in_current_second = 0;
-            int64 second_start_time = GLib.get_monotonic_time ();
-            int64 start_time = second_start_time;
-            int64 total_bytes = 0;
-            int64 content_length = message.response_headers.get_content_length ();
+        public Result download_with_options (
+            string url,
+            string dest_path,
+            Cancellable? cancellable = null,
+            DownloadProgressCallback? progress_callback = null
+        ) throws GLib.Error {
+            uint attempt = 0;
 
             while (true) {
-                ssize_t bytes_read = yield input_stream.read_async (buffer, Priority.DEFAULT, null);
-                if (bytes_read == 0) break;
+                if (cancellable != null) {
+                    cancellable.set_error_if_cancelled ();
+                }
 
-                total_bytes += bytes_read;
-
-                size_t bytes_written;
-                yield output_stream.write_all_async (buffer[0:bytes_read], Priority.DEFAULT, null, out bytes_written);
-
-                if (this.speed_limit_bps > 0) {
-                    bytes_in_current_second += bytes_read;
-                    int64 current_time = GLib.get_monotonic_time ();
-                    int64 elapsed_us = current_time - second_start_time;
-                    int64 expected_us = (bytes_in_current_second * 1000000) / this.speed_limit_bps;
-
-                    if (elapsed_us < expected_us) {
-                        uint delay_ms = (uint) ((expected_us - elapsed_us) / 1000);
-                        if (delay_ms > 0) {
-                            yield async_sleep (delay_ms);
-                        }
+                Result result;
+                try {
+                    result = download_once (url, dest_path, cancellable, progress_callback);
+                } catch (Error e) {
+                    bool can_retry_error = attempt < this.max_retry_attempts && should_retry_error (e);
+                    if (!can_retry_error) {
+                        throw e;
                     }
 
-                    if (GLib.get_monotonic_time () - second_start_time >= 1000000) {
-                        bytes_in_current_second = 0;
-                        second_start_time = GLib.get_monotonic_time ();
+                    attempt++;
+                    if (this.retry_delay_ms > 0) {
+                        sleep_with_cancellable ((int64) this.retry_delay_ms * 1000, cancellable);
                     }
+                    continue;
+                }
+
+                bool can_retry_http =
+                    !result.is_downloaded &&
+                    this.retry_on_http_failure &&
+                    should_retry_http_status (result.status_code) &&
+                    attempt < this.max_retry_attempts;
+
+                if (!can_retry_http) {
+                    return result;
+                }
+
+                attempt++;
+                if (this.retry_delay_ms > 0) {
+                    sleep_with_cancellable ((int64) this.retry_delay_ms * 1000, cancellable);
                 }
             }
+        }
 
-            yield input_stream.close_async (Priority.DEFAULT, null);
-            yield output_stream.close_async (Priority.DEFAULT, null);
+        public async Result download_async_with_options (
+            string url,
+            string dest_path,
+            Cancellable? cancellable = null,
+            DownloadProgressCallback? progress_callback = null
+        ) throws GLib.Error {
+            uint attempt = 0;
 
-            return build_result (message, total_bytes, start_time, content_length);
+            while (true) {
+                if (cancellable != null) {
+                    cancellable.set_error_if_cancelled ();
+                }
+
+                Result result;
+                try {
+                    result = yield download_once_async (url, dest_path, cancellable, progress_callback);
+                } catch (Error e) {
+                    bool can_retry_error = attempt < this.max_retry_attempts && should_retry_error (e);
+                    if (!can_retry_error) {
+                        throw e;
+                    }
+
+                    attempt++;
+                    if (this.retry_delay_ms > 0) {
+                        yield async_sleep_with_cancellable (this.retry_delay_ms, cancellable);
+                    }
+                    continue;
+                }
+
+                bool can_retry_http =
+                    !result.is_downloaded &&
+                    this.retry_on_http_failure &&
+                    should_retry_http_status (result.status_code) &&
+                    attempt < this.max_retry_attempts;
+
+                if (!can_retry_http) {
+                    return result;
+                }
+
+                attempt++;
+                if (this.retry_delay_ms > 0) {
+                    yield async_sleep_with_cancellable (this.retry_delay_ms, cancellable);
+                }
+            }
         }
 
         public Gee.ArrayList<BatchDownloadResult> download_many (Gee.List<DownloadRequest> requests) {

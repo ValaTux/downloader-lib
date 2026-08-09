@@ -24,6 +24,10 @@ Small, practical Vala downloader library with sync/async API, queue support, and
 - Sync and async single-file download
 - Batch and queue processing APIs
 - Optional speed limit in B/s, KB/s, MB/s, or GB/s
+- Cancellation via Cancellable in advanced API
+- Live progress callback (bytes, speed, ETA)
+- Bounded retry for transient failures
+- Injectable Soup.Session and custom user-agent support
 - Result object with HTTP status, real speed, and remaining time
 - Built on GLib/GIO + libsoup 3 + Gee
 
@@ -134,6 +138,51 @@ Practical note:
 - If your app uses multiple threads, keep all queue mutations on one thread or add app-level synchronization around your own state.
 
 ## ✨ Examples
+
+### Advanced options (cancellable + progress + retry)
+
+```vala
+using GLib;
+using ValaTux.Downloader;
+
+public async int run_with_advanced_options () {
+	var manager = new Manager ();
+	manager.max_retry_attempts = 1;
+	manager.retry_delay_ms = 250;
+
+	var cancellable = new Cancellable ();
+
+	Timeout.add (2000, () => {
+		cancellable.cancel ();
+		return false;
+	});
+
+	try {
+		var result = yield manager.download_async_with_options (
+			"https://example.com/file.iso",
+			"/tmp/file.iso",
+			cancellable,
+			(downloaded_bytes, content_length, actual_speed_bps, remaining_time) => {
+				stdout.printf (
+					"downloaded=%" + int64.FORMAT + " bytes, speed=%" + int64.FORMAT + " B/s, eta=%" + int64.FORMAT + " s\n",
+					downloaded_bytes,
+					actual_speed_bps,
+					remaining_time
+				);
+			}
+		);
+
+		stdout.printf ("status=%u downloaded=%s\n", result.status_code, result.is_downloaded ? "yes" : "no");
+		return 0;
+	} catch (IOError.CANCELLED e) {
+		stderr.printf ("Cancelled by user\n");
+		return 2;
+	} catch (Error e) {
+		stderr.printf ("Download failed: %s\n", e.message);
+		return 1;
+	}
+}
+```
 
 ### Synchronous download
 
@@ -310,16 +359,26 @@ Namespace: ValaTux.Downloader
 - Manager
   - download(string url, string dest_path) -> Result
   - download_async(string url, string dest_path) -> Result
+	- download_with_options(string url, string dest_path, Cancellable? cancellable = null, DownloadProgressCallback? progress_callback = null) -> Result
+	- download_async_with_options(string url, string dest_path, Cancellable? cancellable = null, DownloadProgressCallback? progress_callback = null) -> Result
   - add_to_download(string url, string dest_path) -> BatchDownloadResult
   - download_queued(bool clear_after_download = true) -> Gee.ArrayList<BatchDownloadResult>
   - download_queued_async(bool clear_after_download = true) -> Gee.ArrayList<BatchDownloadResult>
   - clear_download_queue()
   - download_many(Gee.List<DownloadRequest>) -> Gee.ArrayList<BatchDownloadResult>
   - download_many_async(Gee.List<DownloadRequest>) -> Gee.ArrayList<BatchDownloadResult>
+	- set_session(Soup.Session)
+	- get_session() -> Soup.Session
+	- set_user_agent(string user_agent)
   - set_speed_limit_in_bytes(int64)
   - set_speed_limit_in_kilobytes(int64)
   - set_speed_limit_in_megabytes(int64)
   - set_speed_limit_in_gigabytes(int64)
+	- max_retry_attempts (uint)
+	- retry_delay_ms (uint)
+	- retry_on_http_failure (bool)
+- DownloadProgressCallback
+	- (downloaded_bytes, content_length, actual_speed_bps, remaining_time)
 - DownloadRequest
   - url (string)
   - dest_path (string)

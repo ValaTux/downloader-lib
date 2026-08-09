@@ -12,6 +12,13 @@ namespace ValaTux.Downloader {
     const int64 TIME_MONTH = 2592000;
     const int64 TIME_YEAR = 31536000;
 
+    public delegate void DownloadProgressCallback (
+        int64 downloaded_bytes,
+        int64 content_length,
+        int64 actual_speed_bps,
+        int64 remaining_time
+    );
+
     public async void async_sleep (uint interval_ms) {
         Timeout.add (interval_ms, () => {
             async_sleep.callback ();

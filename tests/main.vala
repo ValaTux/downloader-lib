@@ -8,6 +8,7 @@ int main (string[] args) {
 
     ValaTux.Testcases.register_test_suite<AppTests.ExampleTest> ();
     ValaTux.Testcases.register_test_suite<AppTests.DownloadAsyncLocalServerTest> ();
+    ValaTux.Testcases.register_test_suite<AppTests.DownloadFeaturesTest> ();
     ValaTux.Testcases.register_test_suite<AppTests.DownloadSyncLocalServerTest> ();
     ValaTux.Testcases.register_test_suite<AppTests.DownloadSyncNotFoundTest> ();
     ValaTux.Testcases.register_test_suite<AppTests.DownloadSyncInternalErrorTest> ();
