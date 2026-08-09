@@ -7,6 +7,8 @@ namespace AppTests {
         construct {
             add_test ("manager/download_queue_sync_mixed_results", test_manager_download_queue_sync_mixed_results);
             add_test ("manager/download_queue_async_mixed_results", test_manager_download_queue_async_mixed_results);
+            add_test ("manager/download_queue_sync_add_during_download", test_manager_download_queue_sync_add_during_download);
+            add_test ("manager/download_queue_async_add_during_download", test_manager_download_queue_async_add_during_download);
         }
 
         public void test_manager_download_queue_sync_mixed_results () {
@@ -177,6 +179,216 @@ namespace AppTests {
 
             FileUtils.remove (ok_dest_path);
             FileUtils.remove (missing_dest_path);
+            DirUtils.remove (temp_dir);
+            server.disconnect ();
+        }
+
+        public void test_manager_download_queue_sync_add_during_download () {
+            var server = new Soup.Server ("server-header", "ValaTestServer", null);
+
+            uint8[] slow_response_body = new uint8[32768];
+            for (int i = 0; i < slow_response_body.length; i++) {
+                slow_response_body[i] = (uint8) ('A' + (i % 26));
+            }
+
+            string late_payload = "queued-during-sync";
+            uint8[] late_response_body = late_payload.data;
+
+            server.add_handler (null, (srv, msg, path, query) => {
+                if (path == "/slow-sync") {
+                    msg.set_status (Soup.Status.OK, null);
+                    msg.set_response ("application/octet-stream", Soup.MemoryUse.COPY, slow_response_body);
+                } else if (path == "/late-sync") {
+                    msg.set_status (Soup.Status.OK, null);
+                    msg.set_response ("text/plain", Soup.MemoryUse.COPY, late_response_body);
+                } else {
+                    msg.set_status (Soup.Status.NOT_FOUND, null);
+                }
+            });
+
+            try {
+                assert (server.listen_local (0, Soup.ServerListenOptions.IPV4_ONLY));
+            } catch (Error e) {
+                assert_not_reached ();
+            }
+
+            var uris = server.get_uris ();
+            string base_uri = uris.nth_data (0).to_string ();
+
+            string temp_dir;
+            try {
+                temp_dir = DirUtils.make_tmp ("vala-downloader-lib-test-XXXXXX");
+            } catch (FileError e) {
+                assert_not_reached ();
+            }
+
+            string slow_url = base_uri.has_suffix ("/") ? @"$(base_uri)slow-sync" : @"$(base_uri)/slow-sync";
+            string late_url = base_uri.has_suffix ("/") ? @"$(base_uri)late-sync" : @"$(base_uri)/late-sync";
+
+            string slow_dest_path = Path.build_filename (temp_dir, "downloaded-queued-sync-slow.bin");
+            string late_dest_path = Path.build_filename (temp_dir, "downloaded-queued-sync-late.txt");
+
+            var manager = new Manager ();
+            manager.set_speed_limit_in_bytes (16384);
+
+            var queued_slow = manager.add_to_download (slow_url, slow_dest_path);
+            BatchDownloadResult? queued_late = null;
+
+            var loop = new MainLoop (null, false);
+            Gee.ArrayList<BatchDownloadResult>? results = null;
+
+            var download_thread = new Thread<bool> ("sync-download-queue-add-during", () => {
+                results = manager.download_queued ();
+
+                Idle.add (() => {
+                    loop.quit ();
+                    return false;
+                });
+
+                return true;
+            });
+
+            var add_thread = new Thread<bool> ("sync-download-queue-add-item", () => {
+                GLib.Thread.usleep (100000);
+                queued_late = manager.add_to_download (late_url, late_dest_path);
+                return true;
+            });
+
+            loop.run ();
+            download_thread.join ();
+            add_thread.join ();
+
+            assert (queued_late != null);
+            assert (results != null);
+            assert (results.size == 2);
+            assert (results[0] == queued_slow);
+            assert (results[1] == queued_late);
+
+            var slow_result = results[0];
+            assert (slow_result.error_message == null);
+            assert (slow_result.result != null);
+            assert (slow_result.result.is_downloaded);
+            assert (slow_result.result.status_code == Soup.Status.OK);
+
+            var late_result = results[1];
+            assert (late_result.error_message == null);
+            assert (late_result.result != null);
+            assert (late_result.result.is_downloaded);
+            assert (late_result.result.status_code == Soup.Status.OK);
+
+            string late_downloaded;
+            try {
+                FileUtils.get_contents (late_dest_path, out late_downloaded);
+            } catch (FileError e) {
+                assert_not_reached ();
+            }
+
+            assert (late_downloaded == late_payload);
+
+            FileUtils.remove (slow_dest_path);
+            FileUtils.remove (late_dest_path);
+            DirUtils.remove (temp_dir);
+            server.disconnect ();
+        }
+
+        public void test_manager_download_queue_async_add_during_download () {
+            var server = new Soup.Server ("server-header", "ValaTestServer", null);
+
+            uint8[] slow_response_body = new uint8[32768];
+            for (int i = 0; i < slow_response_body.length; i++) {
+                slow_response_body[i] = (uint8) ('a' + (i % 26));
+            }
+
+            string late_payload = "queued-during-async";
+            uint8[] late_response_body = late_payload.data;
+
+            server.add_handler (null, (srv, msg, path, query) => {
+                if (path == "/slow-async") {
+                    msg.set_status (Soup.Status.OK, null);
+                    msg.set_response ("application/octet-stream", Soup.MemoryUse.COPY, slow_response_body);
+                } else if (path == "/late-async") {
+                    msg.set_status (Soup.Status.OK, null);
+                    msg.set_response ("text/plain", Soup.MemoryUse.COPY, late_response_body);
+                } else {
+                    msg.set_status (Soup.Status.NOT_FOUND, null);
+                }
+            });
+
+            try {
+                assert (server.listen_local (0, Soup.ServerListenOptions.IPV4_ONLY));
+            } catch (Error e) {
+                assert_not_reached ();
+            }
+
+            var uris = server.get_uris ();
+            string base_uri = uris.nth_data (0).to_string ();
+
+            string temp_dir;
+            try {
+                temp_dir = DirUtils.make_tmp ("vala-downloader-lib-test-XXXXXX");
+            } catch (FileError e) {
+                assert_not_reached ();
+            }
+
+            string slow_url = base_uri.has_suffix ("/") ? @"$(base_uri)slow-async" : @"$(base_uri)/slow-async";
+            string late_url = base_uri.has_suffix ("/") ? @"$(base_uri)late-async" : @"$(base_uri)/late-async";
+
+            string slow_dest_path = Path.build_filename (temp_dir, "downloaded-queued-async-slow.bin");
+            string late_dest_path = Path.build_filename (temp_dir, "downloaded-queued-async-late.txt");
+
+            var manager = new Manager ();
+            manager.set_speed_limit_in_bytes (16384);
+
+            var queued_slow = manager.add_to_download (slow_url, slow_dest_path);
+            BatchDownloadResult? queued_late = null;
+            bool late_added = false;
+
+            var loop = new MainLoop (null, false);
+            Gee.ArrayList<BatchDownloadResult>? results = null;
+
+            Timeout.add (100, () => {
+                queued_late = manager.add_to_download (late_url, late_dest_path);
+                late_added = true;
+                return false;
+            });
+
+            manager.download_queued_async.begin (true, (obj, res) => {
+                results = manager.download_queued_async.end (res);
+                loop.quit ();
+            });
+
+            loop.run ();
+
+            assert (late_added);
+            assert (queued_late != null);
+            assert (results != null);
+            assert (results.size == 2);
+            assert (results[0] == queued_slow);
+            assert (results[1] == queued_late);
+
+            var slow_result = results[0];
+            assert (slow_result.error_message == null);
+            assert (slow_result.result != null);
+            assert (slow_result.result.is_downloaded);
+            assert (slow_result.result.status_code == Soup.Status.OK);
+
+            var late_result = results[1];
+            assert (late_result.error_message == null);
+            assert (late_result.result != null);
+            assert (late_result.result.is_downloaded);
+            assert (late_result.result.status_code == Soup.Status.OK);
+
+            string late_downloaded;
+            try {
+                FileUtils.get_contents (late_dest_path, out late_downloaded);
+            } catch (FileError e) {
+                assert_not_reached ();
+            }
+
+            assert (late_downloaded == late_payload);
+
+            FileUtils.remove (slow_dest_path);
+            FileUtils.remove (late_dest_path);
             DirUtils.remove (temp_dir);
             server.disconnect ();
         }

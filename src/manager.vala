@@ -33,6 +33,7 @@ namespace ValaTux.Downloader {
 
         private Soup.Session session;
         private Gee.ArrayList<BatchDownloadResult> download_queue;
+        private Mutex queue_mutex;
 
         public Manager () {
             this.session = new Soup.Session ();
@@ -42,12 +43,24 @@ namespace ValaTux.Downloader {
 
         public BatchDownloadResult add_to_download (string url, string dest_path) {
             var queued_item = new BatchDownloadResult (url, dest_path);
-            this.download_queue.add (queued_item);
+
+            this.queue_mutex.lock ();
+            try {
+                this.download_queue.add (queued_item);
+            } finally {
+                this.queue_mutex.unlock ();
+            }
+
             return queued_item;
         }
 
         public void clear_download_queue () {
-            this.download_queue.clear ();
+            this.queue_mutex.lock ();
+            try {
+                this.download_queue.clear ();
+            } finally {
+                this.queue_mutex.unlock ();
+            }
         }
 
         public void set_speed_limit_in_bytes (int64 bytes_per_second) {
@@ -216,12 +229,27 @@ namespace ValaTux.Downloader {
 
         public Gee.ArrayList<BatchDownloadResult> download_queued (bool clear_after_download = true) {
             var queued_items = new Gee.ArrayList<BatchDownloadResult> ();
+            int processed_count = 0;
 
-            foreach (var item in this.download_queue) {
-                queued_items.add (item);
-            }
+            while (true) {
+                BatchDownloadResult? item = null;
 
-            foreach (var item in queued_items) {
+                this.queue_mutex.lock ();
+                try {
+                    if (processed_count >= this.download_queue.size) {
+                        break;
+                    }
+
+                    item = this.download_queue[processed_count];
+                    processed_count++;
+                } finally {
+                    this.queue_mutex.unlock ();
+                }
+
+                if (item == null) {
+                    continue;
+                }
+
                 item.result = null;
                 item.error_message = null;
 
@@ -230,10 +258,20 @@ namespace ValaTux.Downloader {
                 } catch (Error e) {
                     item.error_message = e.message;
                 }
+
+                queued_items.add (item);
             }
 
-            if (clear_after_download) {
-                this.download_queue.clear ();
+            if (clear_after_download && processed_count > 0) {
+                this.queue_mutex.lock ();
+                try {
+                    int remove_count = int.min (processed_count, this.download_queue.size);
+                    for (int i = 0; i < remove_count; i++) {
+                        this.download_queue.remove_at (0);
+                    }
+                } finally {
+                    this.queue_mutex.unlock ();
+                }
             }
 
             return queued_items;
@@ -289,43 +327,70 @@ namespace ValaTux.Downloader {
 
         public async Gee.ArrayList<BatchDownloadResult> download_queued_async (bool clear_after_download = true) {
             var queued_items = new Gee.ArrayList<BatchDownloadResult> ();
+            int processed_count = 0;
 
-            foreach (var item in this.download_queue) {
-                queued_items.add (item);
-            }
+            while (true) {
+                var wave_items = new Gee.ArrayList<BatchDownloadResult> ();
 
-            int pending = queued_items.size;
-
-            if (pending == 0) {
-                return queued_items;
-            }
-
-            var loop = new MainLoop (null, false);
-
-            foreach (var item in queued_items) {
-                var current_item = item;
-                current_item.result = null;
-                current_item.error_message = null;
-
-                download_async.begin (current_item.url, current_item.dest_path, (obj, res) => {
-                    try {
-                        current_item.result = download_async.end (res);
-                    } catch (Error e) {
-                        current_item.error_message = e.message;
+                this.queue_mutex.lock ();
+                try {
+                    if (processed_count >= this.download_queue.size) {
+                        break;
                     }
 
-                    pending--;
-
-                    if (pending == 0) {
-                        loop.quit ();
+                    int wave_end = this.download_queue.size;
+                    for (int i = processed_count; i < wave_end; i++) {
+                        wave_items.add (this.download_queue[i]);
                     }
-                });
+                    processed_count = wave_end;
+                } finally {
+                    this.queue_mutex.unlock ();
+                }
+
+                int pending = wave_items.size;
+                if (pending == 0) {
+                    continue;
+                }
+
+                var loop = new MainLoop (null, false);
+
+                foreach (var item in wave_items) {
+                    var current_item = item;
+                    current_item.result = null;
+                    current_item.error_message = null;
+
+                    download_async.begin (current_item.url, current_item.dest_path, (obj, res) => {
+                        try {
+                            current_item.result = download_async.end (res);
+                        } catch (Error e) {
+                            current_item.error_message = e.message;
+                        }
+
+                        pending--;
+
+                        if (pending == 0) {
+                            loop.quit ();
+                        }
+                    });
+                }
+
+                loop.run ();
+
+                foreach (var item in wave_items) {
+                    queued_items.add (item);
+                }
             }
 
-            loop.run ();
-
-            if (clear_after_download) {
-                this.download_queue.clear ();
+            if (clear_after_download && processed_count > 0) {
+                this.queue_mutex.lock ();
+                try {
+                    int remove_count = int.min (processed_count, this.download_queue.size);
+                    for (int i = 0; i < remove_count; i++) {
+                        this.download_queue.remove_at (0);
+                    }
+                } finally {
+                    this.queue_mutex.unlock ();
+                }
             }
 
             return queued_items;

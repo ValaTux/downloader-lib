@@ -1,69 +1,141 @@
+<div align="center">
+
 # vala-downloader-lib
 
-A small Vala library for downloading files with optional speed limiting.
+Small, practical Vala downloader library with sync/async API, queue support, and optional speed limits.
 
-## Contents
+[![Language: Vala](https://img.shields.io/badge/language-Vala-4E6C8B.svg)](https://vala.dev)
+[![Build: Meson](https://img.shields.io/badge/build-Meson-3D4D5C.svg)](https://mesonbuild.com)
+[![License: MIT](https://img.shields.io/badge/license-MIT-2EA043.svg)](LICENSE)
 
-- [Features](#features)
-- [Public API (summary)](#public-api-summary)
-- [Example: synchronous download](#example-synchronous-download)
-- [Example: asynchronous download](#example-asynchronous-download)
-- [Example: queued downloads (multiple files)](#example-queued-downloads-multiple-files)
-- [Use In Other Projects](#use-in-other-projects)
-- [Quick init (dependency setup)](#quick-init-dependency-setup)
-- [Install via Vamposer](#install-via-vamposer)
-- [Build](#build)
-- [Test](#test)
-- [Dependencies](#dependencies)
-- [License](#license)
+</div>
 
-## Features
+## Quick Navigation
 
-- Synchronous and asynchronous download methods
-- Optional speed limits in B/s, KB/s, MB/s, or GB/s
-- Structured download result object with status and metrics
-- Built on top of GLib/GIO and libsoup 3
+[Features](#-features) •
+[Install](#-install-in-other-projects) •
+[Queue Behavior](#-queue-behavior-add-during-download) •
+[Examples](#-examples) •
+[Build and Test](#-build-and-test) •
+[API Summary](#-public-api-summary)
 
-## Public API (summary)
+## 🚀 Features
 
-Namespace: `ValaTux.Downloader`
+- Sync and async single-file download
+- Batch and queue processing APIs
+- Optional speed limit in B/s, KB/s, MB/s, or GB/s
+- Result object with HTTP status, real speed, and remaining time
+- Built on GLib/GIO + libsoup 3 + Gee
 
-- `Manager`
-  - `download(string url, string dest_path) -> Result`
-  - `download_async(string url, string dest_path) -> Result`
-	- `add_to_download(string url, string dest_path) -> BatchDownloadResult`
-	- `download_queued(bool clear_after_download = true) -> Gee.ArrayList<BatchDownloadResult>`
-	- `download_queued_async(bool clear_after_download = true) -> Gee.ArrayList<BatchDownloadResult>`
-	- `clear_download_queue()`
-	- `download_many(Gee.List<DownloadRequest>) -> Gee.ArrayList<BatchDownloadResult>`
-	- `download_many_async(Gee.List<DownloadRequest>) -> Gee.ArrayList<BatchDownloadResult>`
-  - `set_speed_limit_in_bytes(int64)`
-  - `set_speed_limit_in_kilobytes(int64)`
-  - `set_speed_limit_in_megabytes(int64)`
-  - `set_speed_limit_in_gigabytes(int64)`
-- `DownloadRequest`
-	- `url` (`string`)
-	- `dest_path` (`string`)
-- `BatchDownloadResult`
-	- `url` (`string`)
-	- `dest_path` (`string`)
-	- `result` (`Result?`)
-	- `error_message` (`string?`)
-	- `is_successful` (`bool`)
-- `Result`
-  - `is_downloaded` (`bool`)
-  - `actual_speed_bps` (`int64`)
-  - `remaining_time` (`int64`, seconds, `-1` when unknown)
-  - `status_code` (`uint`, HTTP status)
-  - `get_remaining_time_in_seconds() -> int64`
-  - `get_remaining_time_in_minutes() -> int64`
-  - `get_remaining_time_in_hours() -> int64`
-  - `get_remaining_time_in_days() -> int64`
-  - `get_actual_speed_in_kilobytes() -> int64`
-  - `get_actual_speed_in_megabytes() -> int64`
-  - `get_actual_speed_in_gigabytes() -> int64`
+## 📦 Install In Other Projects
 
-## Example: synchronous download
+### Option 1: Meson subproject (recommended)
+
+In your consumer project meson.build:
+
+```meson
+vala_downloader_dep = dependency('vala_downloader', fallback: ['vala-downloader-lib', 'vala_downloader_dep'])
+
+executable('my-app',
+	['src/main.vala'],
+	dependencies: [vala_downloader_dep],
+)
+```
+
+Then in Vala code:
+
+```vala
+using ValaTux.Downloader;
+```
+
+### Option 2: Installed library (pkg-config)
+
+Install this project first:
+
+```sh
+meson setup builddir
+meson compile -C builddir
+meson install -C builddir
+```
+
+In your consumer meson.build:
+
+```meson
+vala_downloader_dep = dependency('vala-downloader-lib', method: 'pkg-config')
+```
+
+### Option 3: Local vapi/lib/include (vendored)
+
+Copy artifacts from release build:
+
+- build-release/src/libvala-downloader-lib.so*
+- build-release/src/vapi/vala-downloader-lib.vapi
+- build-release/src/vala-downloader-lib.h
+
+Quick setup script from consumer project root:
+
+```sh
+curl -sSfL https://raw.githubusercontent.com/ValaTux/downloader-lib/master/init-local-vapi.sh | bash
+```
+
+The script will:
+
+- download prebuilt release ZIP when available
+- fallback to source build when assets are unavailable
+- copy files into local vapi/, lib/, include/
+- append an idempotent helper block to meson.build
+
+## 🧠 Queue Behavior (Add During Download)
+
+Queue processing now supports adding new items while a queue run is already in progress.
+
+- New items are not lost.
+- They are processed in the same queue call, in a following wave.
+- With clear_after_download=true, only processed items are removed from the queue.
+- Internal queue access is protected by a mutex for safe concurrent add/clear operations.
+
+This behavior is covered by dedicated tests:
+
+- manager/download_queue_sync_add_during_download
+- manager/download_queue_async_add_during_download
+
+### Example: add items while queue is already running
+
+```vala
+using ValaTux.Downloader;
+
+public async int run_dynamic_queue () {
+	var manager = new Manager ();
+
+	manager.add_to_download ("https://example.com/initial-file.bin", "/tmp/initial-file.bin");
+
+	// Add another file a bit later, while queue processing is already running.
+	Timeout.add (150, () => {
+		manager.add_to_download ("https://example.com/late-file.bin", "/tmp/late-file.bin");
+		return false;
+	});
+
+	var results = yield manager.download_queued_async (true);
+
+	stdout.printf ("Processed items: %d\n", results.size);
+	foreach (var item in results) {
+		bool ok = item.result != null && item.result.is_downloaded && item.error_message == null;
+		stdout.printf ("%s -> %s\n", item.url, ok ? "ok" : "failed");
+	}
+
+	return 0;
+}
+```
+
+Practical note:
+
+- New items are picked in the next processing wave of the same queue call.
+- With clear_after_download=true, only items already processed in that call are removed.
+- If your app uses multiple threads, keep all queue mutations on one thread or add app-level synchronization around your own state.
+
+## ✨ Examples
+
+### Synchronous download
 
 ```vala
 using ValaTux.Downloader;
@@ -93,7 +165,7 @@ int main (string[] args) {
 }
 ```
 
-## Example: asynchronous download
+### Asynchronous download
 
 ```vala
 using ValaTux.Downloader;
@@ -123,7 +195,7 @@ public async int run_async () {
 }
 ```
 
-## Example: queued downloads (multiple files)
+### Queued downloads (multiple files)
 
 ```vala
 using ValaTux.Downloader;
@@ -137,7 +209,6 @@ public async int run_batch_async () {
 
 	var results = yield manager.download_queued_async ();
 
-	// file_a is the same object as one item in results and now contains Result metrics.
 	if (file_a.result != null) {
 		stdout.printf ("file-a remaining=%" + int64.FORMAT + " s\n", file_a.result.remaining_time);
 	}
@@ -166,73 +237,23 @@ public async int run_batch_async () {
 }
 ```
 
-Note: For unsuccessful downloads, `remaining_time` is `-1` (unknown).
+Note: for unsuccessful downloads, remaining_time is -1 (unknown).
 
-## Use In Other Projects
+## 🔧 Quick Init
 
-Yes. The generated artifacts are intended for reuse:
-
-- `build-release/src/libvala-downloader-lib.so*`
-- `build-release/src/vapi/vala-downloader-lib.vapi`
-- `build-release/src/vala-downloader-lib.h`
-
-### Option 1: Meson subproject (recommended)
-
-In your consumer project `meson.build`:
-
-```meson
-vala_downloader_dep = dependency('vala_downloader', fallback: ['vala-downloader-lib', 'vala_downloader_dep'])
-
-executable('my-app',
-	['src/main.vala'],
-	dependencies: [vala_downloader_dep],
-)
-```
-
-Then in Vala code:
-
-```vala
-using ValaTux.Downloader;
-```
-
-### Option 2: Installed library (pkg-config)
-
-Install this project first:
+To add vala-downloader-lib as a Meson subproject dependency:
 
 ```sh
-meson setup builddir
-meson compile -C builddir
-meson install -C builddir
+./init.sh
 ```
 
-In your consumer `meson.build`:
-
-```meson
-vala_downloader_dep = dependency('vala-downloader-lib', method: 'pkg-config')
-```
-
-### Option 3: Local `vapi` folder in your project
-
-If you want everything vendored inside your own repository, copy release artifacts into your consumer project, for example:
-
-- `your-project/vapi/vala-downloader-lib.vapi`
-- `your-project/lib/libvala-downloader-lib.so`
-- `your-project/include/vala-downloader-lib.h`
-
-To automate this setup, run the helper script in your consumer project root:
+Or run it directly from GitHub:
 
 ```sh
-curl -sSfL https://raw.githubusercontent.com/ValaTux/downloader-lib/master/init-local-vapi.sh | bash
+curl -sSfL https://raw.githubusercontent.com/ValaTux/downloader-lib/refs/heads/master/init.sh -o init.sh && chmod +x init.sh && ./init.sh && rm init.sh
 ```
 
-The script will:
-
-- download a prebuilt release ZIP when available (fast path)
-- fallback to building `vala-downloader-lib` from source when release assets are unavailable
-- copy artifacts into your local `vapi/`, `lib/`, and `include/` directories
-- append an idempotent helper block to your `meson.build` with reusable variables
-
-## Install via [Vamposer](https://github.com/ValaTux/vamposer)
+## 🧩 Install via Vamposer
 
 In your consumer project root:
 
@@ -241,7 +262,7 @@ vamposer require ValaTux/downloader-lib master
 vamposer install
 ```
 
-Then include generated Vamposer dependencies in your `meson.build`:
+In your consumer meson.build:
 
 ```meson
 subdir('vamposer')
@@ -254,91 +275,88 @@ executable('my-app',
 )
 ```
 
-You can also use a fixed tag or commit instead of `master`.
-
-If you also want the test workspace, install it as a development dependency:
+If you also want test workspace as a dev dependency:
 
 ```sh
 vamposer require --dev ValaTux/testcases master
 vamposer install --dev
 ```
 
-You can also run it from a local file copy:
+## 🛠 Build and Test
 
-```sh
-./init-local-vapi.sh
-```
-
-Then configure your consumer `meson.build`:
-
-```meson
-executable('my-app',
-	['src/main.vala'],
-	dependencies: [
-		dependency('glib-2.0'),
-		dependency('gio-2.0'),
-		dependency('libsoup-3.0'),
-	],
-	vala_args: ['--vapidir=' + meson.project_source_root() / 'vapi'],
-	c_args: ['-I' + meson.project_source_root() / 'include'],
-	link_args: ['-L' + meson.project_source_root() / 'lib', '-lvala-downloader-lib'],
-)
-```
-
-And load the shared library at runtime, for example:
-
-```sh
-LD_LIBRARY_PATH=./lib ./my-app
-```
-
-## Quick init (dependency setup)
-
-To add `vala-downloader-lib` as a Meson subproject dependency, run:
-
-```sh
-./init.sh
-```
-
-Or run it directly from GitHub:
-
-```sh
-curl -sSfL https://raw.githubusercontent.com/ValaTux/downloader-lib/refs/heads/master/init.sh -o init.sh && chmod +x init.sh && ./init.sh && rm init.sh
-```
-
-## Build
+Build:
 
 ```sh
 meson setup builddir
 meson compile -C builddir
 ```
 
-## Test
+Test:
 
 ```sh
 meson test -C builddir
 ```
 
-or via Makefile helper:
+Or via Makefile helper:
 
 ```sh
 make tests
 ```
 
-## Dependencies
+## 📚 Public API Summary
+
+Namespace: ValaTux.Downloader
+
+- Manager
+  - download(string url, string dest_path) -> Result
+  - download_async(string url, string dest_path) -> Result
+  - add_to_download(string url, string dest_path) -> BatchDownloadResult
+  - download_queued(bool clear_after_download = true) -> Gee.ArrayList<BatchDownloadResult>
+  - download_queued_async(bool clear_after_download = true) -> Gee.ArrayList<BatchDownloadResult>
+  - clear_download_queue()
+  - download_many(Gee.List<DownloadRequest>) -> Gee.ArrayList<BatchDownloadResult>
+  - download_many_async(Gee.List<DownloadRequest>) -> Gee.ArrayList<BatchDownloadResult>
+  - set_speed_limit_in_bytes(int64)
+  - set_speed_limit_in_kilobytes(int64)
+  - set_speed_limit_in_megabytes(int64)
+  - set_speed_limit_in_gigabytes(int64)
+- DownloadRequest
+  - url (string)
+  - dest_path (string)
+- BatchDownloadResult
+  - url (string)
+  - dest_path (string)
+  - result (Result?)
+  - error_message (string?)
+  - is_successful (bool)
+- Result
+  - is_downloaded (bool)
+  - actual_speed_bps (int64)
+  - remaining_time (int64, seconds, -1 when unknown)
+  - status_code (uint, HTTP status)
+  - get_remaining_time_in_seconds() -> int64
+  - get_remaining_time_in_minutes() -> int64
+  - get_remaining_time_in_hours() -> int64
+  - get_remaining_time_in_days() -> int64
+  - get_actual_speed_in_kilobytes() -> int64
+  - get_actual_speed_in_megabytes() -> int64
+  - get_actual_speed_in_gigabytes() -> int64
+
+## 📋 Dependencies
 
 - glib-2.0
 - gio-2.0
 - libsoup-3.0
 - gee-0.8
 
-In consumer projects, use:
+In consumer projects:
 
 ```meson
 vala_downloader_dep = dependency('vala_downloader', fallback: ['vala-downloader-lib', 'vala_downloader_dep'])
 ```
 
-Then add `vala_downloader_dep` to your target dependencies.
+Then add vala_downloader_dep to your target dependencies.
 
-## License
+## 📄 License
 
-MIT (see `LICENSE`).
+MIT (see LICENSE).
