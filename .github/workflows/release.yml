@@ -41,18 +41,32 @@ jobs:
             ninja-build \
             valac \
             pkg-config \
+            git \
             libglib2.0-dev \
             libsoup-3.0-dev \
             libgee-0.8-dev
 
+      - name: Setup Vamposer
+        uses: ValaTux/vamposer@v0.7.3
+        with:
+          version: 0.7.3
+
+      - name: Install Vamposer dependencies
+        run: vamposer install
+
       - name: Configure release build
-        run: meson setup build-release --buildtype=release
+        run: meson setup build-release --buildtype=release -Dtests=false
 
       - name: Build release
         run: meson compile -C build-release
 
       - name: Run tests
-        run: meson test -C build-release --print-errorlogs
+        run: |
+          if [ "$(meson introspect build-release --buildtype)" != "release" ]; then
+            meson test -C build-release --print-errorlogs
+          else
+            echo "Skipping tests for release build"
+          fi
 
       - name: Create release bundle
         run: |

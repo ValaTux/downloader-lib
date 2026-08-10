@@ -10,7 +10,7 @@ test_sources = files(
   'queue_test.vala',
 )
 
-vala_testcases_dep = dependency('vala_testcases', fallback: ['vala_testcases', 'vala_testcases_dep'])
+vala_testcases_dep = dependency('vala_testcases', fallback: ['testcases', 'vala_testcases_dep'])
 
 test_exe = executable('tests',
   test_sources,

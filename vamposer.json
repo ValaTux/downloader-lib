@@ -1,0 +1,9 @@
+{
+  "dependencies" : {  },
+  "dependencies-dev" : {
+    "ValaTux/testcases" : "*"
+  },
+  "system_dependencies" : {  },
+  "aliases" : {  },
+  "alias_sources" : []
+}

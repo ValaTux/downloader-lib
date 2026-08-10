@@ -3,3 +3,4 @@ option('build_tests',
   value: true,
   description: 'Build and run downloader-lib test targets'
 )
+option('tests', type: 'boolean', value: false, description: 'Build the test suite')

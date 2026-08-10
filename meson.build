@@ -1,7 +1,7 @@
 project('vala-downloader-lib', 'vala', 'c', version: '0.4.1')
 
 subdir('src')
-if get_option('build_tests')
+if get_option('tests')
 	subdir('tests')
 endif
 

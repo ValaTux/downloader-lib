@@ -26,12 +26,22 @@ jobs:
             ninja-build \
             valac \
             pkg-config \
+            git \
+            curl \
             libglib2.0-dev \
             libsoup-3.0-dev \
             libgee-0.8-dev
 
+      - name: Setup Vamposer
+        uses: ValaTux/vamposer@v0.7.3
+        with:
+          version: 0.7.3
+
+      - name: Install Vamposer dependencies
+        run: vamposer install --dev
+
       - name: Configure project
-        run: meson setup builddir
+        run: meson setup builddir -Dtests=true
 
       - name: Build project
         run: meson compile -C builddir

@@ -1,0 +1,6 @@
+
+[wrap-file]
+directory = testcases
+
+[provide]
+vala_testcases = vala_testcases_dep
